@@ -56,6 +56,7 @@ jobs:
             artifact: zeroclaw
             ext: tar.gz
             use_cross: true
+            cross_compiler: musl-tools
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -75,19 +76,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ${{ matrix.cross_compiler }}
-
+          sudo apt install musl-tools
       - name: Build release
         shell: bash
         run: |
           if [ -n "${{ matrix.linker_env || '' }}" ] && [ -n "${{ matrix.linker || '' }}" ]; then
             export "${{ matrix.linker_env }}=${{ matrix.linker }}"
-          fi
-          if [ "${{ matrix.target }}" = "arm-unknown-linux-gnueabihf" ]; then
-            # Force ARMv6 codegen for arm-unknown-linux-gnueabihf (#4556).
-            # Ubuntu 22.04's gcc-arm-linux-gnueabihf defaults to ARMv7+NEON,
-            # which segfaults on ARMv6 devices (e.g., Raspberry Pi Zero W).
-            export CFLAGS_arm_unknown_linux_gnueabihf="-march=armv6 -mfpu=vfp -mfloat-abi=hard"
-            export CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_RUSTFLAGS="-C target-feature=-neon"
           fi
           FEATURES="channel-matrix,channel-wechat"
           if [ "${{ matrix.skip_prometheus || 'false' }}" = "true" ]; then
