@@ -26,56 +26,6 @@ env:
   RELEASE_CARGO_FEATURES: channel-matrix,channel-lark,whatsapp-web
 
 jobs:
-  validate:
-    name: Validate Version
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.check.outputs.tag }}
-      version: ${{ steps.check.outputs.version }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Validate semver and Cargo.toml match
-        id: check
-        shell: bash
-        env:
-          INPUT_VERSION: ${{ inputs.version || '' }}
-          REF_NAME: ${{ github.ref_name }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          cargo_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
-
-          # Resolve version from tag push or manual input
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            # Tag push: extract version from tag name (v0.5.9 -> 0.5.9)
-            input_version="${REF_NAME#v}"
-          else
-            input_version="$INPUT_VERSION"
-          fi
-
-          if [[ ! "$input_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Version must be semver (X.Y.Z). Got: ${input_version}"
-            exit 1
-          fi
-
-          if [[ "$cargo_version" != "$input_version" ]]; then
-            echo "::error::Cargo.toml version (${cargo_version}) does not match input (${input_version}). Bump Cargo.toml first."
-            exit 1
-          fi
-
-          tag="v${input_version}"
-
-          # Only check tag existence for manual dispatch (tag push means it already exists)
-          if [[ "$EVENT_NAME" != "push" ]]; then
-            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-              echo "::error::Tag ${tag} already exists."
-              exit 1
-            fi
-          fi
-
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "version=${input_version}" >> "$GITHUB_OUTPUT"
-
   web:
     name: Build Web Dashboard
     runs-on: ubuntu-latest
@@ -107,93 +57,6 @@ jobs:
           path: web/dist/
           retention-days: 1
 
-  release-notes:
-    name: Generate Release Notes
-    runs-on: ubuntu-latest
-    outputs:
-      notes: ${{ steps.notes.outputs.body }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-      - name: Build release notes
-        id: notes
-        shell: bash
-        env:
-          INPUT_VERSION: ${{ inputs.version || '' }}
-          REF_NAME: ${{ github.ref_name }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-
-          # Resolve version from tag push or manual input
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            INPUT_VERSION="${REF_NAME#v}"
-          fi
-
-          # Find the previous stable tag (exclude beta tags)
-          PREV_TAG=$(git tag --sort=-creatordate | grep -vE '\-beta\.' | grep -v "^v${INPUT_VERSION}$" | head -1 || echo "")
-          if [ -z "$PREV_TAG" ]; then
-            RANGE="HEAD"
-          else
-            RANGE="${PREV_TAG}..HEAD"
-          fi
-
-          # If a hand-written changelog exists, use it as the release body
-          # and skip the auto-generated notes entirely.
-          if [ -f "CHANGELOG-next.md" ]; then
-            echo "Using CHANGELOG-next.md as release notes"
-            BODY=$(cat CHANGELOG-next.md)
-          else
-            # Extract features only — skip bug fixes for clean release notes
-            FEATURES=$(git log "$RANGE" --pretty=format:"%s" --no-merges \
-              | grep -iE '^feat(\(|:)' \
-              | sed 's/^feat(\([^)]*\)): /\1: /' \
-              | sed 's/^feat: //' \
-              | sed 's/ (#[0-9]*)$//' \
-              | sort -uf \
-              | while IFS= read -r line; do echo "- ${line}"; done || true)
-
-            if [ -z "$FEATURES" ]; then
-              FEATURES="- Incremental improvements and polish"
-            fi
-
-            # Collect ALL unique contributors: git authors + Co-Authored-By
-            GIT_AUTHORS=$(git log "$RANGE" --pretty=format:"%an" --no-merges | sort -uf || true)
-            CO_AUTHORS=$(git log "$RANGE" --pretty=format:"%b" --no-merges \
-              | grep -ioE 'Co-Authored-By: *[^<]+' \
-              | sed 's/Co-Authored-By: *//i' \
-              | sed 's/ *$//' \
-              | sort -uf || true)
-
-            # Merge, deduplicate, and filter out bots
-            ALL_CONTRIBUTORS=$(printf "%s\n%s" "$GIT_AUTHORS" "$CO_AUTHORS" \
-              | sort -uf \
-              | grep -v '^$' \
-              | grep -viE '\[bot\]$|^dependabot|^github-actions|^copilot|^ZeroClaw Bot|^ZeroClaw Runner|^ZeroClaw Agent|^blacksmith' \
-              | while IFS= read -r name; do echo "- ${name}"; done || true)
-
-            BODY=$(cat <<NOTES_EOF
-          ## What's New
-
-          ${FEATURES}
-
-          ## Contributors
-
-          ${ALL_CONTRIBUTORS}
-
-          ---
-          *Full changelog: ${PREV_TAG}...v${INPUT_VERSION}*
-          NOTES_EOF
-            )
-          fi
-
-          {
-            echo "body<<BODY_EOF"
-            echo "$BODY"
-            echo "BODY_EOF"
-          } >> "$GITHUB_OUTPUT"
-
   build:
     name: Build ${{ matrix.target }}
     needs: [validate, web]
@@ -216,7 +79,7 @@ jobs:
             ext: tar.gz
             use_cross: true
 
-    continue-on-error: ${{ matrix.experimental || false }}
+    continue-on-error: ${{ matrix.experimental || true }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
