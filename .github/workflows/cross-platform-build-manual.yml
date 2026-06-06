@@ -27,14 +27,6 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Build web dashboard
-        # `cargo web build` is the xtask wrapper that:
-        # 1. renders the gateway's OpenAPI 3.1 spec in-process,
-        # 2. runs `npx openapi-typescript` to produce
-        #    `web/src/lib/api-generated.ts` (gitignored — never
-        #    committed since #4f60f4405),
-        # 3. runs `npm ci` + `npm run build` (tsc + vite).
-        # Plain `cd web && npm run build` skips step 1+2 and tsc
-        # fails on the missing import.
         run: cargo web build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -51,18 +43,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ── Linux ARM64 MUSL ──
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             artifact: zeroclaw
             ext: tar.gz
-            use_cross: true
-            cross_compiler: musl-tools
+            use_cross: true           # 使用 cross 工具
+            cross_image: aarch64-unknown-linux-musl  # cross 使用的 Docker 镜像
+
+          # 如果需要其他目标，继续添加：
+          # - os: ubuntu-latest
+          #   target: x86_64-unknown-linux-musl
+          #   artifact: zeroclaw
+          #   ext: tar.gz
+          #   use_cross: true
+          #   cross_image: x86_64-unknown-linux-musl
+
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           toolchain: 1.93.0
           targets: ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         if: runner.os != 'Windows'
 
@@ -71,24 +75,53 @@ jobs:
           name: web-dist
           path: web/dist/
 
-      - name: Install cross compiler
-        if: matrix.cross_compiler
+      # ── 方案 A：使用 cross 工具（推荐，最省心）──
+      - name: Install cross
+        if: matrix.use_cross
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ${{ matrix.cross_compiler }}
-          sudo apt install musl-tools
-      - name: Build release
+          cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build release (with cross)
+        if: matrix.use_cross
         shell: bash
         run: |
-          if [ -n "${{ matrix.linker_env || '' }}" ] && [ -n "${{ matrix.linker || '' }}" ]; then
-            export "${{ matrix.linker_env }}=${{ matrix.linker }}"
-          fi
           FEATURES="channel-matrix,channel-wechat"
           if [ "${{ matrix.skip_prometheus || 'false' }}" = "true" ]; then
-            cargo build --release --locked --no-default-features --features "agent-runtime,schema-export,${FEATURES}" --target ${{ matrix.target }}
+            cross build --release --locked --no-default-features \
+              --features "agent-runtime,schema-export,${FEATURES}" \
+              --target ${{ matrix.target }}
           else
-            cargo build --release --locked --features "${FEATURES}" --target ${{ matrix.target }}
+            cross build --release --locked \
+              --features "${FEATURES}" \
+              --target ${{ matrix.target }}
           fi
+
+      # ── 方案 B：不用 cross，手动安装工具链（备用）──
+      # 如果你不想用 cross，取消注释下面这段，注释掉上面的 cross 步骤
+      #
+      # - name: Install musl cross compiler
+      #   if: ${{ !matrix.use_cross && contains(matrix.target, 'musl') }}
+      #   run: |
+      #     # 下载预编译的 aarch64 musl 工具链
+      #     curl -L https://musl.cc/aarch64-linux-musl-cross.tgz | tar xz -C /tmp
+      #     echo "/tmp/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+      #
+      # - name: Configure cargo for musl
+      #   if: ${{ !matrix.use_cross && contains(matrix.target, 'musl') }}
+      #   run: |
+      #     mkdir -p .cargo
+      #     cat > .cargo/config.toml << 'EOF'
+      #     [target.aarch64-unknown-linux-musl]
+      #     linker = "aarch64-linux-musl-gcc"
+      #     EOF
+      #
+      # - name: Build release (native cargo)
+      #   if: ${{ !matrix.use_cross }}
+      #   shell: bash
+      #   run: |
+      #     FEATURES="channel-matrix,channel-wechat"
+      #     cargo build --release --locked --features "${FEATURES}" --target ${{ matrix.target }}
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: zeroclaw-manual-${{ matrix.target }}
